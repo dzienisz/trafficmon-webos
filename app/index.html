@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Traffic Monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000; color: #e8e8e8;
+    font-family: 'LG Display', 'Helvetica Neue', sans-serif;
+    padding: 40px 48px;
+  }
+  h1 { font-size: 34px; font-weight: 300; margin-bottom: 6px; }
+  #status { color: #888; font-size: 15px; margin-bottom: 28px; }
+  #status.err { color: #ff7b72; }
+  .totals { display: flex; gap: 24px; margin-bottom: 30px; }
+  .card {
+    background: #161616; border: 1px solid #2a2a2a; border-radius: 12px;
+    padding: 18px 28px; min-width: 220px;
+  }
+  .card .label { font-size: 13px; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+  .card .value { font-size: 30px; font-weight: 300; margin-top: 4px; }
+  .tx .value { color: #ffa657; }
+  .rx .value { color: #79c0ff; }
+  #chart { width: 100%; height: 260px; display: block; background: #0d0d0d;
+           border: 1px solid #2a2a2a; border-radius: 12px; margin-bottom: 30px; }
+  h2 { font-size: 20px; font-weight: 400; color: #aaa; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 16px; }
+  td, th { padding: 9px 12px; text-align: left; }
+  th { color: #777; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;
+       border-bottom: 1px solid #2a2a2a; }
+  tr + tr td { border-top: 1px solid #1c1c1c; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .cls { font-size: 11px; padding: 2px 8px; border-radius: 8px; }
+  .cls.wan { background: #123a1d; color: #7ee787; }
+  .cls.lan { background: #1b2a41; color: #79c0ff; }
+  .cls.multicast { background: #2d2640; color: #d2a8ff; }
+  .bar { height: 4px; background: #333; border-radius: 2px; margin-top: 4px; }
+  .bar > div { height: 4px; border-radius: 2px;
+               background: linear-gradient(90deg, #ffa657, #79c0ff); }
+</style>
+</head>
+<body>
+<h1>Traffic Monitor</h1>
+<div id="status">loading…</div>
+
+<div class="totals">
+  <div class="card tx"><div class="label">Sent (24h)</div><div class="value" id="ttx">–</div></div>
+  <div class="card rx"><div class="label">Received (24h)</div><div class="value" id="trx">–</div></div>
+  <div class="card"><div class="label">Hosts (24h)</div><div class="value" id="thosts">–</div></div>
+</div>
+
+<canvas id="chart"></canvas>
+
+<h2>Top talkers</h2>
+<table>
+  <thead><tr><th>Remote host</th><th>Class</th><th style="text-align:right">Sent</th><th style="text-align:right">Received</th></tr></thead>
+  <tbody id="hosts"></tbody>
+</table>
+
+<script>
+var API = 'http://127.0.0.1:8899';
+
+function fmt(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function drawChart(series) {
+  var c = document.getElementById('chart');
+  var dpr = window.devicePixelRatio || 1;
+  var w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  var ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+  if (!series.length) return;
+  var max = 1, i;
+  for (i = 0; i < series.length; i++) {
+    if (series[i].tx + series[i].rx > max) max = series[i].tx + series[i].rx;
+  }
+  var bw = w / series.length;
+  function bars(key, color, base) {
+    ctx.fillStyle = color;
+    for (i = 0; i < series.length; i++) {
+      var bh = (series[i][key] / max) * (h - 20);
+      ctx.fillRect(i * bw + 1, base - bh, Math.max(1, bw - 2), bh);
+    }
+  }
+  bars('rx', 'rgba(121,192,255,0.85)', h - 10);
+  ctx.globalCompositeOperation = 'lighter';
+  bars('tx', 'rgba(255,166,87,0.7)', h - 10);
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function refresh() {
+  fetch(API + '/api/summary?hours=24').then(function (r) { return r.json(); }).then(function (d) {
+    var tx = 0, rx = 0;
+    d.hosts.forEach(function (h) { tx += h.tx; rx += h.rx; });
+    document.getElementById('ttx').textContent = fmt(tx);
+    document.getElementById('trx').textContent = fmt(rx);
+    document.getElementById('thosts').textContent = d.hosts.length;
+    var max = d.hosts.length ? d.hosts[0].tx + d.hosts[0].rx : 1;
+    document.getElementById('hosts').innerHTML = d.hosts.slice(0, 25).map(function (h) {
+      return '<tr><td>' + esc(h.ip) +
+        '<div class="bar"><div style="width:' + Math.round(100 * (h.tx + h.rx) / max) + '%"></div></div></td>' +
+        '<td><span class="cls ' + esc(h.cls) + '">' + esc(h.cls) + '</span></td>' +
+        '<td class="num">' + fmt(h.tx) + '</td><td class="num">' + fmt(h.rx) + '</td></tr>';
+    }).join('');
+    drawChart(d.series);
+    var st = document.getElementById('status');
+    st.className = '';
+    st.textContent = 'updated ' + new Date(d.generated * 1000).toLocaleTimeString();
+  }).catch(function (e) {
+    var st = document.getElementById('status');
+    st.className = 'err';
+    st.textContent = 'cannot reach trafficmon API at ' + API + ' (' + e + ')';
+  });
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+    "id": "io.github.dzienisz.trafficmon",
+    "version": "0.1.0",
+    "vendor": "dzienisz",
+    "type": "web",
+    "main": "index.html",
+    "title": "Traffic Monitor",
+    "appDescription": "Per-host network traffic counters from trafficmon.py",
+    "icon": "icon.png",
+    "largeIcon": "icon.png",
+    "uiRevision": "2",
+    "splashBackground": "#000000",
+    "bgColor": "#000000"
+}
