@@ -38,6 +38,8 @@
   .bar { height: 4px; background: #333; border-radius: 2px; margin-top: 4px; }
   .bar > div { height: 4px; border-radius: 2px;
                background: linear-gradient(90deg, #ffa657, #79c0ff); }
+  .hname { display: block; font-size: 17px; }
+  .hip { display: block; font-size: 12px; color: #777; margin-top: 1px; }
 </style>
 </head>
 <body>
@@ -107,7 +109,10 @@ function refresh() {
     document.getElementById('thosts').textContent = d.hosts.length;
     var max = d.hosts.length ? d.hosts[0].tx + d.hosts[0].rx : 1;
     document.getElementById('hosts').innerHTML = d.hosts.slice(0, 25).map(function (h) {
-      return '<tr><td>' + esc(h.ip) +
+      var label = h.name
+        ? '<span class="hname">' + esc(h.name) + '</span><span class="hip">' + esc(h.ip) + '</span>'
+        : esc(h.ip);
+      return '<tr><td>' + label +
         '<div class="bar"><div style="width:' + Math.round(100 * (h.tx + h.rx) / max) + '%"></div></div></td>' +
         '<td><span class="cls ' + esc(h.cls) + '">' + esc(h.cls) + '</span></td>' +
         '<td class="num">' + fmt(h.tx) + '</td><td class="num">' + fmt(h.rx) + '</td></tr>';

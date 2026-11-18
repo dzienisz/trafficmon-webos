@@ -16,6 +16,7 @@ import time
 ETH_P_ALL = 0x0003
 RUNNING = True
 LIVE = {'since': 0, 'hosts': []}
+NAMES = {}  # ip -> hostname, learned passively from DNS answers
 
 
 def _stop(signum, frame):
@@ -64,7 +65,7 @@ def classify(ip):
 
 
 def parse(frame, local):
-    """Return (remote_ip, direction, nbytes) or None."""
+    """Return dict(remote, direction, n, proto, sport, dport, l4off) or None."""
     if len(frame) < 14:
         return None
     eth = struct.unpack('!H', frame[12:14])[0]
@@ -75,19 +76,92 @@ def parse(frame, local):
     if eth == 0x0800 and len(frame) >= off + 20:
         ihl = (ord(frame[off]) & 0x0f) * 4
         n = struct.unpack('!H', frame[off + 2:off + 4])[0]
+        proto = ord(frame[off + 9])
         src = socket.inet_ntoa(frame[off + 12:off + 16])
         dst = socket.inet_ntoa(frame[off + 16:off + 20])
+        l4 = off + ihl
     elif eth == 0x86dd and len(frame) >= off + 40:
         n = struct.unpack('!H', frame[off + 4:off + 6])[0] + 40
+        proto = ord(frame[off + 6])
         src = socket.inet_ntop(socket.AF_INET6, frame[off + 8:off + 24])
         dst = socket.inet_ntop(socket.AF_INET6, frame[off + 24:off + 40])
+        l4 = off + 40
     else:
         return None
+    sport = dport = 0
+    if proto in (6, 17) and len(frame) >= l4 + 4:
+        sport, dport = struct.unpack('!HH', frame[l4:l4 + 4])
     if src in local:
-        return dst, 'tx', n
-    if dst in local:
-        return src, 'rx', n
-    return None
+        remote, direction = dst, 'tx'
+    elif dst in local:
+        remote, direction = src, 'rx'
+    else:
+        return None
+    return {'remote': remote, 'dir': direction, 'n': n, 'proto': proto,
+            'sport': sport, 'dport': dport, 'l4': l4}
+
+
+def dns_name(msg, off):
+    """Decode a (possibly compressed) DNS name at msg[off:]."""
+    labels = []
+    seen = 0
+    while True:
+        if off >= len(msg) or seen > 20:
+            return None
+        ln = ord(msg[off])
+        if ln == 0:
+            return '.'.join(labels)
+        if ln & 0xc0 == 0xc0:
+            if off + 1 >= len(msg):
+                return None
+            off = ((ln & 0x3f) << 8) | ord(msg[off + 1])
+            seen += 1
+            continue
+        off += 1
+        if off + ln > len(msg):
+            return None
+        labels.append(msg[off:off + ln].decode('latin-1'))
+        off += ln
+
+
+def dns_skip_name(msg, off):
+    while True:
+        ln = ord(msg[off])
+        if ln == 0:
+            return off + 1
+        if ln & 0xc0 == 0xc0:
+            return off + 2
+        off += 1 + ln
+
+
+def sniff_dns(msg):
+    """Map answer IPs -> owner name from a DNS message (A/AAAA only)."""
+    out = {}
+    if len(msg) < 12:
+        return out
+    try:
+        qd, an = struct.unpack('!HH', msg[4:8])[0:2]
+        off = 12
+        for _ in range(qd):
+            off = dns_skip_name(msg, off) + 4
+        for _ in range(an):
+            name = dns_name(msg, off)
+            off = dns_skip_name(msg, off)
+            if off + 10 > len(msg):
+                break
+            rtype = struct.unpack('!H', msg[off:off + 2])[0]
+            rdlen = struct.unpack('!H', msg[off + 8:off + 10])[0]
+            rdata = msg[off + 10:off + 10 + rdlen]
+            off += 10 + rdlen
+            if not name:
+                continue
+            if rtype == 1 and rdlen == 4:
+                out.setdefault(socket.inet_ntoa(rdata), name)
+            elif rtype == 28 and rdlen == 16:
+                out.setdefault(socket.inet_ntop(socket.AF_INET6, rdata), name)
+    except (IndexError, struct.error, ValueError):
+        pass
+    return out
 
 
 def flush(acct, logpath, started):
@@ -156,15 +230,17 @@ def api_response(path, datadir):
         except ValueError:
             hours = 24
         agg, series = aggregate(datadir, hours)
-        hosts = [{'ip': ip, 'cls': cls, 'tx': v[0], 'rx': v[1]}
+        hosts = [{'ip': ip, 'cls': cls, 'tx': v[0], 'rx': v[1],
+                  'name': NAMES.get(ip)}
                  for (ip, cls), v in sorted(
                      agg.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))]
+        live_hosts = [dict(h, name=NAMES.get(h['ip']))
+                      for h in LIVE['hosts']]
         return 200, {
             'hours': hours,
             'generated': int(time.time()),
             'hosts': hosts,
-            'live': {'since': LIVE['since'],
-                     'hosts': [dict(h) for h in LIVE['hosts']]},
+            'live': {'since': LIVE['since'], 'hosts': live_hosts},
             'series': [{'t': t, 'tx': v[0], 'rx': v[1]}
                        for t, v in sorted(series.items())],
         }
@@ -244,6 +320,11 @@ def main():
 
     if not os.path.isdir(datadir):
         os.makedirs(datadir)
+    try:
+        with open(os.path.join(datadir, 'names.json')) as f:
+            NAMES.update(json.load(f))
+    except Exception:
+        pass
     local = local_ips(iface)
     s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,
                       socket.htons(ETH_P_ALL))
@@ -269,7 +350,7 @@ def main():
         if frame:
             p = parse(frame, local)
             if p:
-                ip, direction, n = p
+                ip, direction, n = p['remote'], p['dir'], p['n']
                 key = (ip, classify(ip))
                 v = acct.get(key)
                 if v is None:
@@ -278,6 +359,8 @@ def main():
                     v[0] += n
                 else:
                     v[1] += n
+                if p['proto'] == 17 and 53 in (p['sport'], p['dport']):
+                    NAMES.update(sniff_dns(frame[p['l4'] + 8:]))
         now = time.time()
         today = time.strftime('%Y-%m-%d')
         if today != day:
@@ -288,6 +371,8 @@ def main():
         if now - last_flush >= flush_s:
             try:
                 flush(acct, logpath, started)
+                with open(os.path.join(datadir, 'names.json'), 'w') as nf:
+                    json.dump(NAMES, nf)
             except Exception:
                 pass
             acct = {}
