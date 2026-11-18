@@ -35,6 +35,18 @@
   .cls.wan { background: #123a1d; color: #7ee787; }
   .cls.lan { background: #1b2a41; color: #79c0ff; }
   .cls.multicast { background: #2d2640; color: #d2a8ff; }
+  .cat { font-size: 11px; padding: 2px 8px; border-radius: 8px; margin-left: 6px; }
+  .cat.lg { background: #3d1f1f; color: #ff9b9b; }
+  .cat.media { background: #1b2a41; color: #79c0ff; }
+  .cat.infra { background: #1f3030; color: #7ee7d8; }
+  .cat.google { background: #2d2640; color: #d2a8ff; }
+  .cat.telemetry { background: #402d16; color: #ffb86b; }
+  .cat.other { background: #222; color: #999; }
+  tr.host { cursor: pointer; }
+  tr.host:hover td { background: #141414; }
+  #charttitle { font-size: 14px; color: #888; margin-bottom: 8px; }
+  #charttitle b { color: #ddd; font-weight: 500; }
+  #charttitle a { color: #79c0ff; cursor: pointer; margin-left: 12px; display: none; }
   .bar { height: 4px; background: #333; border-radius: 2px; margin-top: 4px; }
   .bar > div { height: 4px; border-radius: 2px;
                background: linear-gradient(90deg, #ffa657, #79c0ff); }
@@ -52,6 +64,7 @@
   <div class="card"><div class="label">Hosts (24h)</div><div class="value" id="thosts">–</div></div>
 </div>
 
+<div id="charttitle">all hosts · last 24h <a id="chartreset">← back to all hosts</a></div>
 <canvas id="chart"></canvas>
 
 <h2>Top talkers</h2>
@@ -109,15 +122,16 @@ function refresh() {
     document.getElementById('thosts').textContent = d.hosts.length;
     var max = d.hosts.length ? d.hosts[0].tx + d.hosts[0].rx : 1;
     document.getElementById('hosts').innerHTML = d.hosts.slice(0, 25).map(function (h) {
+      var cat = h.cat && h.cat !== 'other' ? '<span class="cat ' + esc(h.cat) + '">' + esc(h.cat) + '</span>' : '';
       var label = h.name
-        ? '<span class="hname">' + esc(h.name) + '</span><span class="hip">' + esc(h.ip) + '</span>'
-        : esc(h.ip);
-      return '<tr><td>' + label +
+        ? '<span class="hname">' + esc(h.name) + cat + '</span><span class="hip">' + esc(h.ip) + '</span>'
+        : esc(h.ip) + cat;
+      return '<tr class="host" data-ip="' + esc(h.ip) + '"><td>' + label +
         '<div class="bar"><div style="width:' + Math.round(100 * (h.tx + h.rx) / max) + '%"></div></div></td>' +
         '<td><span class="cls ' + esc(h.cls) + '">' + esc(h.cls) + '</span></td>' +
         '<td class="num">' + fmt(h.tx) + '</td><td class="num">' + fmt(h.rx) + '</td></tr>';
     }).join('');
-    drawChart(d.series);
+    if (selectedIp === null) drawChart(d.series);
     var st = document.getElementById('status');
     st.className = '';
     st.textContent = 'updated ' + new Date(d.generated * 1000).toLocaleTimeString();
@@ -126,6 +140,35 @@ function refresh() {
     st.className = 'err';
     st.textContent = 'cannot reach trafficmon API at ' + API + ' (' + e + ')';
   });
+}
+
+var selectedIp = null;
+
+document.getElementById('hosts').addEventListener('click', function (e) {
+  var tr = e.target;
+  while (tr && !tr.dataset) tr = tr.parentNode;
+  while (tr && !tr.dataset.ip) tr = tr.parentNode;
+  if (!tr || !tr.dataset.ip) return;
+  selectedIp = tr.dataset.ip;
+  loadHost(selectedIp);
+});
+
+document.getElementById('chartreset').addEventListener('click', function () {
+  selectedIp = null;
+  this.style.display = 'none';
+  document.getElementById('charttitle').firstChild.textContent = 'all hosts · last 24h ';
+  refresh();
+});
+
+function loadHost(ip) {
+  fetch(API + '/api/host?ip=' + encodeURIComponent(ip) + '&hours=24')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      document.getElementById('charttitle').firstChild.textContent =
+        (d.name || d.ip) + ' · ' + fmt(d.totals.tx) + ' up / ' + fmt(d.totals.rx) + ' down ';
+      document.getElementById('chartreset').style.display = 'inline';
+      drawChart(d.series);
+    });
 }
 
 refresh();

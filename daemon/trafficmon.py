@@ -215,6 +215,39 @@ def report(datadir, hours):
         print('%-40s %-9s %12d %12d' % (ip, cls, tx, rx))
 
 
+CATEGORIES = [
+    ('telemetry', ('analytics.', 'telemetry.', 'metrics.', 'tracking.',
+                   'crashlytics.', 'sentry.', 'datadog', 'ad.',
+                   'ads.', 'adsystem.', 'doubleclick.', 'moatads.',
+                   'scorecardresearch.', 'quantserve.')),
+    ('lg', ('ueiwsp.', 'lge.com', 'lgtvsdp.', 'lgappstv.', 'lgwebsos.', 'lgecares.',
+            'itv.lg', 'snu.lge.', 'aic.lg.', 'ngfts.lge.', 'gts.lge.',
+            'ad.lgappstv.', 'info.lgsmartad.', 'lgsmartad.')),
+    ('media', ('netflix.', 'nflx', 'youtube.', 'googlevideo.', 'ytimg.',
+               'spotify.', 'scdn.co', 'disneyplus.', 'bamgrid.', 'dssott.',
+               'apple.com', 'itunes.', 'tv.apple', 'twitch.', 'ttvnw.',
+               'primevideo.', 'amazonvideo.', 'hbomax.', 'max.com',
+               'jellyfin', 'twitchtv.')),
+    ('infra', ('cloudflare.', 'akamai', 'fastly.', 'amazonaws.',
+               'cloudfront.', 'edgecast', 'llnwd.', 'cdn',
+               'pool.ntp.', 'time.', 'dns.google', 'cloudflare-dns.')),
+    ('google', ('google.com', 'googleapis.', 'gstatic.', '1e100.',
+                'google-analytics.', 'googletag', 'doubleclick.')),
+]
+
+
+def categorize(name):
+    if not name:
+        return 'other'
+    n = name.lower()
+    # order matters: telemetry-like names win over their owner domain
+    for cat, suffixes in CATEGORIES:
+        for suf in suffixes:
+            if n == suf.rstrip('.') or n.endswith(suf):
+                return cat
+    return 'other'
+
+
 def api_response(path, datadir):
     """Return (status, body-dict) for a GET path like /api/summary?hours=1."""
     parts = path.split('?', 1)
@@ -231,16 +264,53 @@ def api_response(path, datadir):
             hours = 24
         agg, series = aggregate(datadir, hours)
         hosts = [{'ip': ip, 'cls': cls, 'tx': v[0], 'rx': v[1],
-                  'name': NAMES.get(ip)}
+                  'name': NAMES.get(ip), 'cat': categorize(NAMES.get(ip))}
                  for (ip, cls), v in sorted(
                      agg.items(), key=lambda kv: -(kv[1][0] + kv[1][1]))]
-        live_hosts = [dict(h, name=NAMES.get(h['ip']))
+        live_hosts = [dict(h, name=NAMES.get(h['ip']),
+                           cat=categorize(NAMES.get(h['ip'])))
                       for h in LIVE['hosts']]
         return 200, {
             'hours': hours,
             'generated': int(time.time()),
             'hosts': hosts,
             'live': {'since': LIVE['since'], 'hosts': live_hosts},
+            'series': [{'t': t, 'tx': v[0], 'rx': v[1]}
+                       for t, v in sorted(series.items())],
+        }
+    if parts[0] == '/api/host':
+        ip = qs.get('ip', '')
+        try:
+            hours = float(qs.get('hours', 24))
+        except ValueError:
+            hours = 24
+        cutoff = time.time() - hours * 3600
+        series = {}
+        tot = [0, 0]
+        for name in sorted(os.listdir(datadir)):
+            if not name.startswith('stats-') or not name.endswith('.jsonl'):
+                continue
+            with open(os.path.join(datadir, name)) as f:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get('ts', 0) < cutoff:
+                        continue
+                    bucket = int(rec['ts'] // 60) * 60
+                    for h in rec.get('hosts', []):
+                        if h['ip'] != ip:
+                            continue
+                        b = series.setdefault(bucket, [0, 0])
+                        b[0] += h['tx']
+                        b[1] += h['rx']
+                        tot[0] += h['tx']
+                        tot[1] += h['rx']
+        return 200, {
+            'ip': ip, 'hours': hours, 'name': NAMES.get(ip),
+            'cat': categorize(NAMES.get(ip)),
+            'totals': {'tx': tot[0], 'rx': tot[1]},
             'series': [{'t': t, 'tx': v[0], 'rx': v[1]}
                        for t, v in sorted(series.items())],
         }
@@ -273,7 +343,8 @@ def serve_http(port, datadir):
                  'Content-Length: %d\r\nAccess-Control-Allow-Origin: *\r\n'
                  '\r\n' % (code, reason, len(body))).encode() + body)
         except Exception:
-            pass
+            import traceback
+            traceback.print_exc()
         finally:
             try:
                 conn.close()
