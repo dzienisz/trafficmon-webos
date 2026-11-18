@@ -1,0 +1,15 @@
+{
+  "id": "io.github.dzienisz.trafficmon",
+  "version": "0.3.0",
+  "type": "web",
+  "title": "Traffic Monitor",
+  "appDescription": "Per-host network traffic counters from trafficmon.py",
+  "iconUri": "https://raw.githubusercontent.com/dzienisz/trafficmon-webos/main/app/icon.png",
+  "sourceUrl": "https://github.com/dzienisz/trafficmon-webos",
+  "rootRequired": "required",
+  "ipkUrl": "io.github.dzienisz.trafficmon_0.3.0_all.ipk",
+  "ipkHash": {
+    "sha256": "e5e04d10f29309954d118d8f8534121623df73a8a2661bc1f26eea05b7c1a172"
+  },
+  "ipkSize": 3906
+}
